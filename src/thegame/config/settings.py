@@ -11,6 +11,7 @@ class Settings(object):
         self.egg = Path(op.dirname(self.CONF_FILE)) / ".." / ".." / "egg"
         self.tex = Path(op.dirname(self.CONF_FILE)) / ".." / ".." / "tex"
         self.bam = Path(op.dirname(self.CONF_FILE)) / ".." / ".." / "bam"
+        self.sfx = Path(op.dirname(self.CONF_FILE)) / ".." / ".." / "sfx"
 
 
 settings = Settings()
