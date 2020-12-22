@@ -3,8 +3,17 @@ from pathlib import Path
 from panda3d.core import loadPrcFile
 
 
-class Settings(object):
+class _Const(object):
+    SHOW_COLLIDERS = False
+    ALLOW_DAYLIGHT = True
+    ALLOW_SHADOWS = True
+    ALLOW_FILTERS = False
+    ALLOW_AMBIENT = False
+    TRD_PERSON_CAM = True
     CONF_FILE = Path(op.dirname(__file__)) / "thegame.prc"
+
+
+class Settings(_Const):
 
     def __init__(self):
         self.prc = loadPrcFile(self.CONF_FILE)
