@@ -1,16 +1,16 @@
 import numpy as np
 from direct.filter.CommonFilters import CommonFilters
 from direct.showbase.ShowBase import (
-    ShowBase,
     AmbientLight,
     CollisionNode,
-    CollisionSphere,
-    CollisionHandlerPusher,
-    CollisionTraverser,
     CollisionPlane,
     Plane,
     Vec3,
-    Point3, CollisionHandlerEvent, AudioSound, CollisionBox, AntialiasAttrib, DirectionalLight, BitMask32, NodePath
+    Point3,
+    AudioSound,
+    CollisionBox,
+    DirectionalLight,
+    NodePath
 )
 from direct.showbase.ShowBaseGlobal import globalClock
 from direct.task.Task import Task
@@ -37,69 +37,66 @@ def update_key_map(key, state):
 
 
 class Tank(object):
-    __slots__ = ["tank", "gun", "hp", "tank_moving_sound", "tank_fire_sound"]
+    __slots__ = ["tank", "gun", "hp", "tank_moving_sound", "tank_fire_sound", "tank_idle_sound",
+                 "engine_running"]
+
+    SFX_KEYS = ["tank_moving_sound", "tank_fire_sound", "tank_idle_sound"]
 
     def __init__(self, tank, gun, loader):
         self.tank = tank
         self.gun = gun
         self.hp = 100
+        self.engine_running = False
 
         setattr(self, "tank_fire_sound", loader.loadSfx(settings.sfx / "tank-fire.wav"))
         setattr(self, "tank_moving_sound", loader.loadSfx(settings.sfx / "tank-moving.wav"))
+        setattr(self, "tank_idle_sound", loader.loadSfx(settings.sfx / "tank-idle.wav"))
 
     def handle_sfx(self):
         is_moving = KEY_MAP["w"] or KEY_MAP["s"] or KEY_MAP["a"] or KEY_MAP["d"]
-        if is_moving and self.tank_moving_sound.status() != AudioSound.PLAYING:
-            self.tank_moving_sound.play()
 
+        # start engine
+        if is_moving and not self.engine_running:
+            self.engine_running = True
+
+        # stop sounds
         if not is_moving and self.tank_moving_sound.status() == AudioSound.PLAYING:
             self.tank_moving_sound.stop()
 
+        if is_moving and self.tank_idle_sound.status() == AudioSound.PLAYING:
+            self.tank_idle_sound.stop()
 
-class TheGameWindow(ShowBase):
-    BULLET_SPEED = 200
-    SPEED = 35
-    BULLETS = []
-    ENVIRONMENT = {}
+        # play sounds
+        if is_moving and self.tank_moving_sound.status() != AudioSound.PLAYING:
+            self.tank_moving_sound.play()
 
-    def create_model(self, from_path, reparent_to, uid, name=None,
-                     position=None, scale=None, color=None, _store=True):
-        if uid in self.ENVIRONMENT and _store:
-            raise KeyError(f"Value {uid} of uid already exists.")
-        position = position or (0, 0, 0)
-        obj = self.loader.loadModel(from_path)
-        obj.reparent_to(reparent_to)
-        name = name or uid
-        obj.set_name(name)
-        if scale:
-            obj.set_scale(scale)
-        if color:
-            obj.set_color(color)
-        obj.set_pos(*position)
-        if _store:
-            self.ENVIRONMENT[uid] = obj
-        return obj
+        if not is_moving and self.tank_idle_sound.status() != AudioSound.PLAYING and self.engine_running:
+            self.tank_idle_sound.play()
 
-    def redistribute_light(self, light_node):
-        for key, value in self.ENVIRONMENT.items():
-            logger.info(f"seting light {light_node} for model {key}")
-            value.set_light(light_node)
 
-    def __init__(self, *args, **kwargs):
+class BattleTank(object):
+    BULLET_SPEED = 500
+    SPEED = 40
+    TURN_SPEED = 25
+
+    def __init__(self, framework, *args, **kwargs):
+        self.bullets = []
+        self.environment = {}
+        self.colliders = {}
+        self.task_manager = []
+
         super().__init__(*args, **kwargs)
-        self.controller = Controller(self.accept, self)
-        self.set_background_color(0.2, 0.2, 0.2, 0.6)
+        self.f = framework
+        self.controller = Controller(self.f.accept, self)
+        self.f.set_background_color(0.2, 0.2, 0.2, 0.6)
 
         if settings.ALLOW_FILTERS:
-            self.filter = CommonFilters(self.win, self.cam)
+            self.filter = CommonFilters(self.f.win, self.f.cam)
             self.filter.set_bloom(mintrigger=0.99, size="small")
             # self.filter.set_blur_sharpen(amount=0.99)
 
         self.base_node = NodePath("base")
-        self.base_node.reparent_to(self.render)
-
-        self.musicManager.setConcurrentSoundLimit(3)
-        self.render.setAntialias(AntialiasAttrib.MMultisample)
+        self.base_node.reparent_to(self.f.render)
 
         # floor
         self.plane = self.create_model(settings.egg / "plane", self.base_node, "ground-zero", color=(1, 1, 1, 1))
@@ -109,10 +106,10 @@ class TheGameWindow(ShowBase):
         self.sun_light_model = self.create_model("models/misc/sphere", self.base_node, "sun", position=(0, -150, 250),
                                                  scale=5.0, color=(1, 1, 1, 1), _store=False)
 
-        tank = self.create_model(settings.egg / "tank", self.base_node, "player", scale=3.0)
+        tank = self.create_model(settings.egg / "tank", self.base_node, "player", scale=3.0, position=(0.0, 0.0, 1e-3))
         gun = self.create_model("models/misc/sphere", tank, "player-gun",
                                 position=(0.0, 4.5, 1.755), scale=0.1, _store=False)
-        self.tank = Tank(tank, gun, loader=self.loader)
+        self.tank = Tank(tank, gun, loader=self.f.loader)
         self._tank = self.tank.tank
 
         # point light for shadows
@@ -127,7 +124,7 @@ class TheGameWindow(ShowBase):
         if settings.ALLOW_DAYLIGHT:
             day_light = DirectionalLight("day-light")
             day_light.set_color((1, 1, 1, 1))
-            self.daylight_node = self.render.attach_new_node(day_light)
+            self.daylight_node = self.f.render.attach_new_node(day_light)
             self.daylight_node.set_p(-20)
             self.daylight_node.set_h(10)
             self.daylight_node.reparent_to(self.sun_light_model)
@@ -136,53 +133,79 @@ class TheGameWindow(ShowBase):
         # shadows
         if settings.ALLOW_SHADOWS:
             sun_light.set_shadow_caster(True, 2048, 2048)
-            self.render.set_shader_auto()
+            self.f.render.set_shader_auto()
 
         # 3rd person camera lock
         if settings.TRD_PERSON_CAM:
-            self.camera.reparent_to(self.tank.tank)
-            self.cam.set_pos(0, -25, 10)
-            self.cam.lookAt(self.tank.tank)
-            self.cam.setP(self.camera.getP() - 20)
+            self.f.camera.reparent_to(self.tank.tank)
+            self.f.cam.set_pos(0, -25, 10)
+            self.f.cam.lookAt(self.tank.tank)
+            self.f.cam.setP(self.f.camera.getP() - 20)
 
         if settings.ALLOW_AMBIENT:
             amblight = AmbientLight("ambient-light")
             amblight.set_color((0.2, 0.2, 0.2, 1))
-            self.amblight_node = self.render.attach_new_node(amblight)
+            self.amblight_node = self.f.render.attach_new_node(amblight)
             self.redistribute_light(self.amblight_node)
 
-        # # collision
-        # self.cTrav = CollisionTraverser()
-        # self.pusher = CollisionHandlerPusher()
-        # # self.pusher.setHorizontal(True)
-        #
-        # tank_collider = self.tank.attachNewNode(CollisionNode('tank-collider'))
-        # tank_collider.node().addSolid(CollisionBox(Point3(-2, -3, 0), Point3(2, 3, 2.25)))
-        #
-        # house_collider = self.house_01.attachNewNode(CollisionNode('house-collider'))
-        # house_collider.node().addSolid(CollisionBox(Point3(0, 0, 0), Point3(16, 16, 17)))
-        #
-        # floor_collider = self.floor.attachNewNode(CollisionNode('ground-zero-collider'))
-        # floor_collider.node().addSolid(CollisionPlane(Plane(Vec3(0, 0, 1), Point3(0, 0, 0))))
-        #
-        # self.pusher.addCollider(tank_collider, self.tank)
-        # self.cTrav.addCollider(tank_collider, self.pusher)
-        #
-        # # show.hide all colliders
-        # if SHOW_COLLIDERS:
-        #     floor_collider.show()
-        #     tank_collider.show()
-        #     house_collider.show()
-        #     self.cTrav.showCollisions(self.render)
-        #
+        # colliders
+        tank_collider = self.environment["player"].attachNewNode(CollisionNode('player-collider'))
+        tank_collider.node().addSolid(CollisionBox(Point3(-2, -3, 0), Point3(2, 3, 2.25)))
+        self.colliders['player-collider'] = tank_collider
+
+        house_01_collider = self.environment["house-01"].attachNewNode(CollisionNode('house-01-collider'))
+        house_01_collider.node().addSolid(CollisionBox(Point3(0, 2, 0), Point3(14, 16, 17)))
+        self.colliders['house-01'] = house_01_collider
+
+        house_02_collider = self.environment["house-02"].attachNewNode(CollisionNode('house-02-collider'))
+        house_02_collider.node().addSolid(CollisionBox(Point3(0, 0, 0), Point3(21, 27, 37)))
+        self.colliders['house-02'] = house_02_collider
+
+        floor_collider = self.environment["ground-zero"].attachNewNode(CollisionNode('ground-zero-collider'))
+        floor_collider.node().addSolid(CollisionPlane(Plane(Vec3(0, 0, 1), Point3(0, 0, 0))))
+        self.colliders['ground-zero-collider'] = floor_collider
+
+        self.f.pusher.addCollider(tank_collider, self.environment["player"])
+        self.f.cTrav.addCollider(tank_collider, self.f.pusher)
+
+        # show.hide all colliders
+        if settings.SHOW_COLLIDERS:
+            for key, value in self.colliders.items():
+                logger.info(f"collider for {key} is visible")
+                value.show()
+                self.f.cTrav.showCollisions(self.f.render)
+
         # uppdate
-        self.task_mgr.add(self.update)
-        self.task_mgr.add(self.update_bullets)
+        self.task_manager.append(self.f.task_mgr.add(self.update))
+        self.task_manager.append(self.f.task_mgr.add(self.update_bullets))
+
+    def create_model(self, from_path, reparent_to, uid, name=None,
+                     position=None, scale=None, color=None, _store=True):
+        if uid in self.environment and _store:
+            raise KeyError(f"Value {uid} of uid already exists.")
+        position = position or (0, 0, 0)
+        obj = self.f.loader.loadModel(from_path)
+        obj.reparent_to(reparent_to)
+        name = name or uid
+        obj.set_name(name)
+        if scale:
+            obj.set_scale(scale)
+        if color:
+            obj.set_color(color)
+        obj.set_pos(*position)
+        if _store:
+            self.environment[uid] = obj
+        return obj
+
+    def redistribute_light(self, light_node):
+        for key, value in self.environment.items():
+            logger.info(f"seting light {light_node} for model {key}")
+            value.set_light(light_node)
 
     def update_bullets(self, task: Task):
         dt = globalClock.getDt()
         rmi = []
-        for idx, entry in enumerate(self.BULLETS):
+        for idx, entry in enumerate(self.bullets):
             bullet, heading = entry
             bullet_pos = bullet.get_pos()
 
@@ -198,7 +221,7 @@ class TheGameWindow(ShowBase):
             bullet_pos.x += dx
             bullet.set_pos(bullet_pos)
 
-        self.BULLETS = [b for i, b in enumerate(self.BULLETS) if i not in rmi]
+        self.bullets = [b for i, b in enumerate(self.bullets) if i not in rmi]
         return task.cont
 
     # def handle_collision(self, entry):
@@ -214,7 +237,7 @@ class TheGameWindow(ShowBase):
     #     # self.sun.set_p(self.sun.get_p() - (dt * 40))
     #     # self.sun.set_h(self.sun.get_h() - (dt * 20))
 
-        self.tank.tank.set_pos(tank_position.x, tank_position.y, 0)
+        self.tank.tank.set_pos(tank_position.x, tank_position.y, tank_position.z)
         self.tank.handle_sfx()
 
         if KEY_MAP["up"]:
@@ -246,27 +269,33 @@ class TheGameWindow(ShowBase):
             self._tank.set_pos(tank_position)
 
         if KEY_MAP["d"] and not KEY_MAP["s"]:
-            tank_heading -= self.SPEED * dt * 2
+            tank_heading -= self.TURN_SPEED * dt * 2
             self._tank.set_h(tank_heading)
 
         if KEY_MAP["a"] and not KEY_MAP["s"]:
-            tank_heading += self.SPEED * dt * 2
+            tank_heading += self.TURN_SPEED * dt * 2
             self._tank.set_h(tank_heading)
 
         if KEY_MAP["d"] and KEY_MAP["s"]:
-            tank_heading += self.SPEED * dt * 2
+            tank_heading += self.TURN_SPEED * dt * 2
             self._tank.set_h(tank_heading)
 
         if KEY_MAP["a"] and KEY_MAP["s"]:
-            tank_heading -= self.SPEED * dt * 2
+            tank_heading -= self.TURN_SPEED * dt * 2
             self._tank.set_h(tank_heading)
 
         return task.cont
 
+    def stop(self):
+        pass
+
+    def __del__(self):
+        logger.info("game session destroyed")
+
 
 class Controller(object):
-    def __init__(self, accept, content: TheGameWindow):
-        self.content = content
+    def __init__(self, accept, content: BattleTank):
+        self.content: BattleTank = content
 
         # key assigment
         accept("w", update_key_map, ["w", True])
@@ -299,21 +328,12 @@ class Controller(object):
         self.content.tank.tank_fire_sound.stop()
         self.content.tank.tank_fire_sound.play()
 
-        position = self.content.tank.gun.get_pos(self.content.render)
+        position = self.content.tank.gun.get_pos(self.content.f.render)
         heading = self.content.tank.tank.get_h() + 90
 
-        bullet = self.content.loader.loadModel("models/misc/sphere")
+        bullet = self.content.f.loader.loadModel("models/misc/sphere")
         bullet.set_pos(position)
         bullet.set_scale(0.3)
         bullet.set_color((0, 0, 0, 1))
-        bullet.reparent_to(self.content.render)
-        self.content.BULLETS.append([bullet, heading])
-
-
-def main():
-    inst = TheGameWindow()
-    inst.run()
-
-
-if __name__ == '__main__':
-    main()
+        bullet.reparent_to(self.content.f.render)
+        self.content.bullets.append([bullet, heading])
