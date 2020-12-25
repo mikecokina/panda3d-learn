@@ -38,19 +38,20 @@ def update_key_map(key, state):
 
 class Tank(object):
     __slots__ = ["tank", "gun", "hp", "tank_moving_sound", "tank_fire_sound", "tank_idle_sound",
-                 "engine_running"]
+                 "engine_running", "f"]
 
     SFX_KEYS = ["tank_moving_sound", "tank_fire_sound", "tank_idle_sound"]
 
-    def __init__(self, tank, gun, loader):
+    def __init__(self, tank, gun, framework):
         self.tank = tank
         self.gun = gun
         self.hp = 100
         self.engine_running = False
+        self.f = framework
 
-        setattr(self, "tank_fire_sound", loader.loadSfx(settings.sfx / "tank-fire.wav"))
-        setattr(self, "tank_moving_sound", loader.loadSfx(settings.sfx / "tank-moving.wav"))
-        setattr(self, "tank_idle_sound", loader.loadSfx(settings.sfx / "tank-idle.wav"))
+        setattr(self, "tank_fire_sound", self.f.loader.loadSfx(settings.sfx / "tank-fire.wav"))
+        setattr(self, "tank_moving_sound", self.f.loader.loadSfx(settings.sfx / "tank-moving.wav"))
+        setattr(self, "tank_idle_sound", self.f.loader.loadSfx(settings.sfx / "tank-idle.wav"))
 
     def handle_sfx(self):
         is_moving = KEY_MAP["w"] or KEY_MAP["s"] or KEY_MAP["a"] or KEY_MAP["d"]
@@ -72,6 +73,10 @@ class Tank(object):
 
         if not is_moving and self.tank_idle_sound.status() != AudioSound.PLAYING and self.engine_running:
             self.tank_idle_sound.play()
+
+    def hit(self):
+        self.hp -= 0.01
+        self.f.messenger.send("update-hp", ["player", self.hp])
 
 
 class BattleTank(object):
@@ -109,7 +114,7 @@ class BattleTank(object):
         tank = self.create_model(settings.egg / "tank", self.base_node, "player", scale=3.0, position=(0.0, 0.0, 1e-3))
         gun = self.create_model("models/misc/sphere", tank, "player-gun",
                                 position=(0.0, 4.5, 1.755), scale=0.1, _store=False)
-        self.tank = Tank(tank, gun, loader=self.f.loader)
+        self.tank = Tank(tank, gun, framework=self.f)
         self._tank = self.tank.tank
 
         # point light for shadows
@@ -231,12 +236,16 @@ class BattleTank(object):
     #     print(entry)
     #
     def update(self, task: Task):
+        if self.f.state == settings.IN_MENU_STATE:
+            return task.cont
+
         dt, ft = globalClock.getDt(), globalClock.getFrameTime()
         tank_heading, tank_position = self.tank.tank.get_h(), self.tank.tank.get_pos()
 
     #     # self.sun.set_p(self.sun.get_p() - (dt * 40))
     #     # self.sun.set_h(self.sun.get_h() - (dt * 20))
 
+        self.tank.hit()
         self.tank.tank.set_pos(tank_position.x, tank_position.y, tank_position.z)
         self.tank.handle_sfx()
 

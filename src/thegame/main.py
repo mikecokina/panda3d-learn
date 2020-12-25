@@ -8,6 +8,7 @@ from direct.showbase.ShowBase import (
 from direct.gui.DirectGui import DGG
 from thegame import settings
 from thegame.battletank import BattleTank
+from thegame.hud import Hud
 from thegame.menu import MainMenu
 
 
@@ -30,6 +31,7 @@ class MainGame(ShowBase):
         self.render.setAntialias(AntialiasAttrib.MMultisample)
 
         self.menu = MainMenu(self)
+        self.hud = Hud(self)
         self.accept("escape", self.__escape)
 
         self.state = settings.IN_MENU_STATE
@@ -54,11 +56,16 @@ class MainGame(ShowBase):
         self.game.stop()
 
     def start_game(self):
+        def update_hp(uid, hp):
+            self.messenger.send("hud_set_hp", [uid, hp])
+
         if self.game is None:
             self.menu.hide()
             self.menu.hide_start_btn()
             self.state = settings.IN_GAME_STATE
             self.game = BattleTank(self)
+            self.hud.show()
+        self.accept("update-hp", update_hp)
 
     def exit_game(self):
         if self.game is not None:
@@ -69,11 +76,13 @@ class MainGame(ShowBase):
         if self.state == settings.IN_GAME_STATE:
             self.state = settings.IN_MENU_STATE
             self.menu.show()
+            self.hud.hide()
             self.disableAllAudio()
 
         elif self.state == settings.IN_MENU_STATE and self.game is not None:
             self.state = settings.IN_GAME_STATE
             self.menu.hide()
+            self.hud.show()
             if not settings.DISABLE_SFX:
                 self.enableAllAudio()
 
