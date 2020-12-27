@@ -10,7 +10,7 @@ from direct.showbase.ShowBase import (
     AudioSound,
     CollisionBox,
     DirectionalLight,
-    NodePath
+    NodePath, CollisionSphere
 )
 from direct.showbase.ShowBaseGlobal import globalClock
 from direct.task.Task import Task
@@ -36,22 +36,37 @@ def update_key_map(key, state):
     KEY_MAP[key] = state
 
 
-class Tank(object):
+class AbstractTank(object):
     __slots__ = ["tank", "gun", "hp", "tank_moving_sound", "tank_fire_sound", "tank_idle_sound",
-                 "engine_running", "f"]
-
+                 "engine_running", "f", "is_alive"]
     SFX_KEYS = ["tank_moving_sound", "tank_fire_sound", "tank_idle_sound"]
 
-    def __init__(self, tank, gun, framework):
-        self.tank = tank
-        self.gun = gun
-        self.hp = 100
-        self.engine_running = False
+    def __init__(self, framework):
         self.f = framework
-
         setattr(self, "tank_fire_sound", self.f.loader.loadSfx(settings.sfx / "tank-fire.wav"))
         setattr(self, "tank_moving_sound", self.f.loader.loadSfx(settings.sfx / "tank-moving.wav"))
         setattr(self, "tank_idle_sound", self.f.loader.loadSfx(settings.sfx / "tank-idle.wav"))
+        self.is_alive = True
+        self.engine_running = False
+        self.hp = 100
+
+
+class EnemyTank(AbstractTank):
+    def __init__(self, tank, gun, framework):
+        super(EnemyTank, self).__init__(framework)
+        self.tank = tank
+        self.gun = gun
+
+    def hit(self):
+        self.hp -= 10
+        self.f.messenger.send("update-hp", ["enemy", self.hp])
+
+
+class Tank(AbstractTank):
+    def __init__(self, tank, gun, framework):
+        super(Tank, self).__init__(framework)
+        self.tank = tank
+        self.gun = gun
 
     def handle_sfx(self):
         is_moving = KEY_MAP["w"] or KEY_MAP["s"] or KEY_MAP["a"] or KEY_MAP["d"]
@@ -80,15 +95,18 @@ class Tank(object):
 
 
 class BattleTank(object):
-    BULLET_SPEED = 500
+    BULLET_SPEED = 400
     SPEED = 40
     TURN_SPEED = 25
+    BULLET_INDEX = 0
 
     def __init__(self, framework, *args, **kwargs):
         self.bullets = []
         self.environment = {}
         self.colliders = {}
         self.task_manager = []
+        self.bullet_colliders = []
+        self.remove_bullet_indices = []
 
         super().__init__(*args, **kwargs)
         self.f = framework
@@ -116,6 +134,9 @@ class BattleTank(object):
                                 position=(0.0, 4.5, 1.755), scale=0.1, _store=False)
         self.tank = Tank(tank, gun, framework=self.f)
         self._tank = self.tank.tank
+
+        enemy = self.create_model(settings.egg / "enemy", self.base_node, "enemy", scale=0.8, position=(-80.0, 80.0, 1e-3))
+        self.enemy = EnemyTank(enemy, None, framework=self.f)
 
         # point light for shadows
         sun_light = PointLight("sun-light")
@@ -155,11 +176,15 @@ class BattleTank(object):
 
         # colliders
         tank_collider = self.environment["player"].attachNewNode(CollisionNode('player-collider'))
-        tank_collider.node().addSolid(CollisionBox(Point3(-2, -3, 0), Point3(2, 3, 2.25)))
+        tank_collider.node().addSolid(CollisionBox(Point3(-1.5, -3, 0), Point3(1.5, 3, 2.25)))
         self.colliders['player-collider'] = tank_collider
 
+        enemy_collider = self.environment["enemy"].attachNewNode(CollisionNode('enemy-collider'))
+        enemy_collider.node().addSolid(CollisionBox(Point3(-6.5, -13.5, 0), Point3(6.5, 13, 10)))
+        self.colliders['enemy-collider'] = enemy_collider
+
         house_01_collider = self.environment["house-01"].attachNewNode(CollisionNode('house-01-collider'))
-        house_01_collider.node().addSolid(CollisionBox(Point3(0, 2, 0), Point3(14, 16, 17)))
+        house_01_collider.node().addSolid(CollisionBox(Point3(0, 2, 0), Point3(14.5, 16, 17)))
         self.colliders['house-01'] = house_01_collider
 
         house_02_collider = self.environment["house-02"].attachNewNode(CollisionNode('house-02-collider'))
@@ -181,6 +206,9 @@ class BattleTank(object):
                 self.f.cTrav.showCollisions(self.f.render)
 
         # uppdate
+        self.f.cHandler.addInPattern('%fn')
+        self.f.accept('bullet-collider', self.handle_collision)
+
         self.task_manager.append(self.f.task_mgr.add(self.update))
         self.task_manager.append(self.f.task_mgr.add(self.update_bullets))
 
@@ -207,15 +235,23 @@ class BattleTank(object):
             logger.info(f"seting light {light_node} for model {key}")
             value.set_light(light_node)
 
+    def object_ids_to_indices(self):
+        return [_ for _, b_collider in enumerate(self.bullet_colliders)
+                if b_collider.node().this in self.remove_bullet_indices]
+
     def update_bullets(self, task: Task):
+        if settings.SHOW_COLLIDERS:
+            for b_collider in self.bullet_colliders:
+                b_collider.show()
+
         dt = globalClock.getDt()
-        rmi = []
+        rmi = [] + self.object_ids_to_indices()
+
         for idx, entry in enumerate(self.bullets):
             bullet, heading = entry
             bullet_pos = bullet.get_pos()
 
             if abs(np.sqrt(bullet_pos.y ** 2 + bullet_pos.x ** 2)) > 300:
-                bullet.removeNode()
                 rmi.append(idx)
                 continue
 
@@ -224,17 +260,25 @@ class BattleTank(object):
 
             bullet_pos.y += dy
             bullet_pos.x += dx
-            bullet.set_pos(bullet_pos)
+            bullet.set_fluid_pos(bullet_pos)
 
+        for idx in rmi:
+            self.bullets[idx][0].removeNode()
+            self.bullet_colliders[idx].node().clearSolids()
+            self.f.cTrav.removeCollider(self.bullet_colliders[idx])
+            pass
+
+        self.bullet_colliders = [b for i, b in enumerate(self.bullet_colliders) if i not in rmi]
         self.bullets = [b for i, b in enumerate(self.bullets) if i not in rmi]
+
+        # print(f"available {len(self.bullet_colliders)} colliders and {len(self.bullets)} bullets")
         return task.cont
 
-    # def handle_collision(self, entry):
-    #     print(self.floor.get_name())
-    #     for k in KEY_MAP:
-    #         KEY_MAP[k] = False
-    #     print(entry)
-    #
+    def handle_collision(self, entry):
+        if entry.into_node.name == "enemy-collider":
+            self.enemy.hit()
+        self.remove_bullet_indices.append(entry.from_node.this)
+
     def update(self, task: Task):
         if self.f.state == settings.IN_MENU_STATE:
             return task.cont
@@ -245,37 +289,44 @@ class BattleTank(object):
     #     # self.sun.set_p(self.sun.get_p() - (dt * 40))
     #     # self.sun.set_h(self.sun.get_h() - (dt * 20))
 
-        self.tank.hit()
-        self.tank.tank.set_pos(tank_position.x, tank_position.y, tank_position.z)
+        # self.tank.hit()
+        z_pos = 0.01 if settings.DISABLE_Z_MOV else tank_position.z
+        self.tank.tank.set_fluid_pos(tank_position.x, tank_position.y, z_pos)
         self.tank.handle_sfx()
+
+        if self.enemy.hp <= 0 and self.enemy.is_alive:
+            self.enemy.tank.removeNode()
+            del self.environment["enemy"]
+            self.enemy.is_alive = False
+            print("defeated")
 
         if KEY_MAP["up"]:
             tank_position.z += self.SPEED * dt
-            self._tank.set_pos(tank_position)
+            self._tank.set_fluid_pos(tank_position)
 
         if KEY_MAP["down"]:
             tank_position.z -= self.SPEED * dt
-            self._tank.set_pos(tank_position)
+            self._tank.set_fluid_pos(tank_position)
 
         if KEY_MAP["q"]:
             tank_position.x -= self.SPEED * dt
-            self._tank.set_pos(tank_position)
+            self._tank.set_fluid_pos(tank_position)
 
         if KEY_MAP["e"]:
             tank_position.x += self.SPEED * dt
-            self._tank.set_pos(tank_position)
+            self._tank.set_fluid_pos(tank_position)
 
         if KEY_MAP["w"]:
             dx = (self.SPEED * dt) * np.cos(np.radians(tank_heading + 90))
             dy = (self.SPEED * dt) * np.sin(np.radians(tank_heading + 90))
             tank_position.y, tank_position.x = tank_position.y + dy, tank_position.x + dx
-            self._tank.set_pos(tank_position)
+            self._tank.set_fluid_pos(tank_position)
 
         if KEY_MAP["s"]:
             dx = - (self.SPEED * dt) * np.cos(np.radians(tank_heading + 90))
             dy = - (self.SPEED * dt) * np.sin(np.radians(tank_heading + 90))
             tank_position.y, tank_position.x = tank_position.y + dy, tank_position.x + dx
-            self._tank.set_pos(tank_position)
+            self._tank.set_fluid_pos(tank_position)
 
         if KEY_MAP["d"] and not KEY_MAP["s"]:
             tank_heading -= self.TURN_SPEED * dt * 2
@@ -341,8 +392,14 @@ class Controller(object):
         heading = self.content.tank.tank.get_h() + 90
 
         bullet = self.content.f.loader.loadModel("models/misc/sphere")
-        bullet.set_pos(position)
+        bullet.set_fluid_pos(position)
         bullet.set_scale(0.3)
         bullet.set_color((0, 0, 0, 1))
         bullet.reparent_to(self.content.f.render)
         self.content.bullets.append([bullet, heading])
+
+        c_node = CollisionNode(f'bullet-collider')
+        b_collider = bullet.attachNewNode(c_node)
+        b_collider.node().addSolid(CollisionSphere(0, 0, 0, 2))
+        self.content.bullet_colliders.append(b_collider)
+        self.content.f.cTrav.addCollider(b_collider, self.content.f.cHandler)

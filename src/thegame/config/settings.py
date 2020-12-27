@@ -11,7 +11,8 @@ class _Const(object):
     ALLOW_AMBIENT = False
     TRD_PERSON_CAM = True
     CONF_FILE = Path(op.dirname(__file__)) / "thegame.prc"
-    DISABLE_SFX = False
+    DISABLE_SFX = True
+    DISABLE_Z_MOV = True
 
     START_GAME_DRIVER = "start-game-driver"
     QUIT_GAME_DRIVER = "quit-game-driver"

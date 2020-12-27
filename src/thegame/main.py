@@ -3,7 +3,7 @@ from direct.showbase.ShowBase import (
     ShowBase,
     AntialiasAttrib,
     CollisionTraverser,
-    CollisionHandlerPusher
+    CollisionHandlerPusher, CollisionHandlerEvent
 )
 from direct.gui.DirectGui import DGG
 from thegame import settings
@@ -43,8 +43,9 @@ class MainGame(ShowBase):
 
         # collision
         self.cTrav = CollisionTraverser()
+        self.cTrav.setRespectPrevTransform(True)
         self.pusher = CollisionHandlerPusher()
-
+        self.cHandler = CollisionHandlerEvent()
         # self.request("Menu")
 
     def enter_menu(self):

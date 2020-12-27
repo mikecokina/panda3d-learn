@@ -54,7 +54,7 @@ class Hud(DirectObject):
         self.player.hide()
 
     def set_hp(self, uid, value):
-        if uid == "bot":
+        if uid == "enemy":
             self.bot["value"] = value
         elif uid == "player":
             self.player["value"] = value
